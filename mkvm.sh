@@ -579,8 +579,17 @@ activate_vm() {
   execute_os_specific ex_activate_vm
 }
 
+set_date_in_future() {
+  execute "VBoxManage modifyvm \"${vm_name}\" --biossystemtimeoffset +36000000000"
+}
+
+set_date_back() {
+  execute "VBoxManage modifyvm \"${vm_name}\" --biossystemtimeoffset -36000000000"
+}
+
 get_vm_info
 import_vm
+set_date_in_future
 set_network_config
 set_rdp_config
 disable_uac
@@ -594,6 +603,7 @@ install_firefox
 install_chrome
 install_selenium
 configure_clipboard
+set_date_back
 activate_vm
 
 if [ "${create_snapshot}" = "True" ]; then

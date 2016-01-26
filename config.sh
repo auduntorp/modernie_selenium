@@ -23,5 +23,5 @@ ie_cache_reg="ie_disablecache.reg"
 ie_protectedmode_reg="ie_protectedmode.reg"
 log_path=""
 vbox_user="${USER}"
-mailto="root"
+#mailto="audun@telenordigital.com"
 create_snapshot=False
