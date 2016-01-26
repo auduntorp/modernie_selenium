@@ -50,7 +50,7 @@ Tools/selenium_conf/IEDriverServer.exe:
 	cd Tools/selenium_conf && unzip IEDriverServer.zip
 
 Tools/selenium_conf/chromedrive.exe:
-	curl -o Tools/selenium_conf/chromedriver.zip -L http://chromedriver.storage.googleapis.com/2.15/chromedriver_win32.zip
+	curl -o Tools/selenium_conf/chromedriver.zip -L http://chromedriver.storage.googleapis.com/2.9/chromedriver_win32.zip
 	cd Tools/selenium_conf && unzip chromedriver.zip
 
 Tools/jre-windows-i586.exe:

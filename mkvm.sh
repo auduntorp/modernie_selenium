@@ -1,14 +1,15 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Debug
 #set -x
 #set -e
 
+cd $(dirname $0)
 source config.sh
-
 # Basic-Checks.
-if [ "${1}" = "--help" ]; then
-  echo "Usage: $0 path_to_ova [--delete VM-Name/UID]"
+if [ "${1}" == "--help" ] || [ -z "${2}" ] ; then
+  echo "Usage:"
+  echo " $0 path_to_ova [--delete <VM-Name/UID>] <hub-host> [<port>]"
   exit 0
 fi
 
@@ -32,41 +33,72 @@ if [ "${USER}" != "${vbox_user}" ]; then
   exit 1
 fi
 
-# Init; Do not change.
 appliance=${1}
-remove_vm=${3}
+hub_host=${2}
+selenium_port=${3}
+
+if [ "${hub_host}" = "--delete" ]; then
+  remove_vm=$3
+  hub_host=$4
+  selenium_port=$5
+fi
+
+if [ -z "${selenium_port}" ]
+then
+    selenium_port=5555
+fi
+
 vm_name=False
 vm_pretty_name=False
 fatal=False
 error=False
 warning=False
+retry_count=2
 
+# Check if --delete was given as second parameter to this script. The VM-Name is expected to be the third parameter.
+# If no VM-Name is given --delete will be ignored.
+if [ "${2}" = "--delete" ]; then
+  if [ ! -z "${3}" ]; then
+    delete_vm
+  else
+    log "Delete VM"
+    echo "--delete was given, but no VM, aborting..."
+    exit 1
+  fi
+fi
 
 copyto() {
   # $1 = filename, $2 = source directory, $3 destination directory
-  if [ ! -f "${2}${1}" ]
+  TARGET=$(realpath ${2}${1})
+  if [ ! -f "$TARGET" ]
   then
-    echo "Local file '${2}${1}' doesn't exist"
+    echo "Local file '${TARGET}' doesn't exist"
   fi
-  execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${2}${1}\" \"${3}${1}\" --username 'IEUser' --password 'Passw0rd!'"
+  execute cp "$TARGET" temp/
+  if [ "${3}" != "${vm_temp}" ]
+  then
+    run_in_vm copy "${vm_temp}${1}" "${3}"
+  fi
+}
+
+run_in_vm() {
+    execute VBoxManage guestcontrol "${vm_name}" --username 'IEUser' --password 'Passw0rd!' run 'C:\Windows\System32\cmd.exe' /C "$@"
 }
 
 # Loop VBoxManage guestcontrol commands as they are unreliable.
 execute() {
   counter=0
-  while [ $counter -lt 10 ]; do
-
+  while [ $counter -lt ${retry_count} ]; do
     echo "Running $@"
-    bash -c "$@"
-
-    if [ "$?" = "0" ]; then
+    "$@"
+    if [ "$?" == "0" ]; then
       guestcontrol_error=0
       break
     else
       guestcontrol_error=1
     fi
     let counter=counter+1
-    sleep 10
+    waiting 10
   done
 
   if [ "$guestcontrol_error" = "0" ]; then
@@ -166,11 +198,12 @@ check_shutdown() {
 # Print some dots.
 waiting() {
   counter=0
-  echo -n "Waiting ${1} seconds"
+  echo -n "Waiting ${1} seconds press any key to continue right away"
   while [ ${counter} -lt ${1} ]; do
-    echo -n "."
     let counter=counter+1
-    sleep 1
+    if read -s -r -p "." -t 1 -n 1; then
+        break
+    fi
   done
   echo ""
 }
@@ -211,11 +244,14 @@ import_vm() {
   execute_os_specific ex_import_vm
 }
 
-# Set VM Network-Config.
-set_network_config() {
-  log "Setting network bridge ${nic_bridge}..."
-  execute "VBoxManage modifyvm \"${vm_name}\" --nic1 bridged --bridgeadapter1 \"${nic_bridge}\""
-  chk error $? "Could not set Bridge"
+set_host_only_network() {
+  log "Setting network to host only..."
+  execute VBoxManage modifyvm "${vm_name}" --nic1 hostonly --hostonlyadapter1 vboxnet0
+  chk error $? "Could not set network to host only"
+  if [ ! -z "${selenium_port}" ]; then
+    log "Forwarding tcp port ${selenium_port} to host..."
+    execute VBoxManage modifyvm "${vm_name}" --natpf1 "tcp-port${selenium_port},tcp,,${selenium_port},,${selenium_port}"
+  fi
 }
 
 # Find and set free Port for RDP-Connection.
@@ -239,7 +275,7 @@ set_rdp_config() {
   if [ "${vrdeport}" = "10000" ]; then
     chk skip $? "Could not find free VRDE-Port"
   else
-    execute "VBoxManage modifyvm \"${vm_name}\" --vrde on --vrdeport \"${vrdeport}\""
+    execute VBoxManage modifyvm "${vm_name}" --vrde on --vrdeport "${vrdeport}"
     chk error $? "Could not set VRDE-Port"
   fi
 }
@@ -287,13 +323,13 @@ start_vm() {
 # Internal: Helper-Functions to disable the Windows Firewall (called by disable_firewall)
 ex_disable_firewall_xp() {
   log "Disabling Windows XP Firewall..."
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image 'C:/windows/system32/netsh.exe' --username 'IEUser' --password 'Passw0rd!' -- firewall set opmode mode=DISABLE"
+  run_in_vm 'C:/windows/system32/netsh.exe' firewall set opmode mode=DISABLE
   chk error $? "Could not disable Firewall"
 }
 
 ex_disable_firewall_w7() {
   log "Disabling Windows Firewall..."
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image 'C:/windows/system32/netsh.exe' --username 'IEUser' --password 'Passw0rd!' -- advfirewall set allprofiles state off"
+  run_in_vm 'C:/windows/system32/netsh.exe' advfirewall set allprofiles state off
   chk error $? "Could not disable Firewall"
 }
 
@@ -312,50 +348,47 @@ disable_firewall() {
 
 # Create C:\Temp\; Most Functions who copy files to the VM are relying on this folder and will fail is he doesn't exists.
 create_temp_path() {
-  vm_temp="C:\\Temp\\"
-  log "Creating ${vm_temp}..."
-  execute "VBoxManage guestcontrol \"${vm_name}\" createdirectory \"${vm_temp}\" --username 'IEUser' --password 'Passw0rd!'"
+  vm_temp="D:\\"
+  mkdir temp
+  log "Creating folder temp and mounting it as ${vm_temp}..."
+  execute VBoxManage sharedfolder add "${vm_name}" --automount --name temp --readonly --hostpath "$(pwd)/temp"
   chk fatal $? "Could not create ${vm_temp}"
 }
 
 # Apply registry changes to configure Internet Explorer settings (Protected-Mode, Cache)
 set_ie_config() {
   log "Apply IE Protected-Mode Settings..."
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${ie_protectedmode_reg}\" "${vm_temp}" --username 'IEUser' --password 'Passw0rd!'"
   copyto "${ie_protectedmode_reg}" "$tools_path" "$vm_temp"
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image 'C:\\Windows\\Regedit.exe' --username 'IEUser' --password 'Passw0rd!' -- /s '${vm_temp}ie_protectedmode.reg'"
+  run_in_vm 'C:\Windows\Regedit.exe' /s "${vm_temp}ie_protectedmode.reg"
   chk error $? "Could not apply IE Protected-Mode-Settings"
   log "Disabling IE-Cache..."
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${ie_cache_reg}\" "${vm_temp}" --username 'IEUser' --password 'Passw0rd!'"
   copyto ie_disablecache.reg "${tools_path}" "${vm_temp}"
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image 'C:\\Windows\\Regedit.exe' --username 'IEUser' --password 'Passw0rd!' -- /s '${vm_temp}ie_disablecache.reg'"
+  run_in_vm 'C:\Windows\Regedit.exe' /s "${vm_temp}ie_disablecache.reg"
   chk error $? "Could not disable IE-Cache"
 }
 
 # Install Java (required by Selenium); We don't use --wait-exit as it may cause trouble with XP-VMs, instead we just wait some time to ensure the Java-Installer can finish.
 install_java() {
   log "Installing Java..."
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${tools_path}${java_exe}\" "${vm_temp}" --username 'IEUser' --password 'Passw0rd!'"
   copyto "${java_exe}" "${tools_path}" "${vm_temp}"
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image \"${vm_temp}${java_exe}\" --username 'IEUser' --password 'Passw0rd!' -- /s"
+  run_in_vm "${vm_temp}${java_exe}" /s
   chk error $? "Could not install Java"
-  waiting 120
+  waiting 30
 }
 
 # Install Firefox.
 install_firefox() {
   log "Installing Firefox..."
   copyto "${firefox_exe}" "${tools_path}" "${vm_temp}"
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image \"${vm_temp}${firefox_exe}\" --username 'IEUser' --password 'Passw0rd!' -- /S"
+  run_in_vm "${vm_temp}${firefox_exe}" /S
   chk error $? "Could not install Firefox"
-  waiting 120
+  waiting 10
 }
 
 # Install Chrome-Driver for Selenium
 install_chrome_driver() {
   log "Installing Chrome Driver..."
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${selenium_path}chromedriver.exe\" C:/Windows/system32/ --username 'IEUser' --password 'Passw0rd!'"
-  copyto chromedriver.exe "${selenium_path}" "C:/Windows/system32/"
+  copyto chromedriver.exe "${selenium_path}" 'C:\Windows\system32\\'
   chk error $? "Could not install Chrome Driver"
   waiting 5
 }
@@ -363,24 +396,21 @@ install_chrome_driver() {
 # Install Chrome.
 install_chrome() {
   log "Installing Chrome..."
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${tools_path}${chrome_exe}\" "${vm_temp}" --username 'IEUser' --password 'Passw0rd!'"
   copyto "${chrome_exe}" "${tools_path}" "${vm_temp}"
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image 'C:/Windows/System32/msiexec.exe' --username 'IEUser' --password 'Passw0rd!' -- /qn /i \"${vm_temp}${chrome_exe}\""
+  run_in_vm 'C:\Windows\System32\msiexec.exe' /qn /i "${vm_temp}${chrome_exe}"
   chk error $? "Could not install Chrome"
-  waiting 120
+  waiting 10
   install_chrome_driver
 }
 
 # Internal: Helper-Functions to Install Selenium (called by install_selenium)
 start_selenium_xp() {
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${selenium_path}selenium.bat\" 'C:/Documents and Settings/All Users/Start Menu/Programs/Startup/' --username 'IEUser' --password 'Passw0rd!'"
-  copyto "selenium.bat" "${selenium_path}" 'C:/Documents and Settings/All Users/Start Menu/Programs/Startup/'
+  copyto selenium.bat "${selenium_path}" 'C:\Documents and Settings\All Users\Start Menu\Programs\Startup\'
   chk error $? "Could not copy Selenium-Startup-File"
 }
 
 start_selenium_w7() {
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${selenium_path}selenium.bat\" 'C:/ProgramData/Microsoft/Windows/Start Menu/Programs/Startup/' --username 'IEUser' --password 'Passw0rd!'"
-  copyto "selenium.bat" "${selenium_path}" 'C:/ProgramData/Microsoft/Windows/Start Menu/Programs/Startup/'
+  copyto selenium.bat "${selenium_path}" 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\'
   chk error $? "Could not copy Selenium-Startup-File"
 }
 
@@ -392,54 +422,58 @@ start_selenium_w8() {
   start_selenium_w7
 }
 
+edit_and_copy_selenium_config() {
+  cp "${1}/config.json" temp/config.json
+  execute sed -i.original "s/5555/${selenium_port}/g" temp/config.json
+  hub_host_json='"hubHost": "hubhost"'
+  new_hub_host_json='"hubHost": "'${hub_host}'"'
+  remote_host=$(VBoxManage guestproperty get "${vm_name}" "/VirtualBox/GuestInfo/Net/0/V4/IP" | awk '{print $2}')
+  remote_host_json='"remoteHost": "http://'${remote_host}:${selenium_port}'"'
+  execute sed -i.edited "s~${hub_host_json}~${new_hub_host_json}, ${remote_host_json}~g" temp/config.json
+  copyto config.json temp/ 'C:\selenium\'
+}
+
 config_selenium_xp() {
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${selenium_path}XP/${vm_ie}/config.json\" C:/selenium/ --username 'IEUser' --password 'Passw0rd!'"
-  copyto config.json "${selenium_path}XP/${vm_ie}/" "C:/selenium/"
+  edit_and_copy_selenium_config "${selenium_path}XP/${vm_ie}/"
   chk error $? "Could not copy Selenium-Config"
 }
 
 config_selenium_w7() {
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${selenium_path}WIN7/${vm_ie}/config.json\" C:/selenium/ --username 'IEUser' --password 'Passw0rd!'"
-  copyto config.json "${selenium_path}WIN7/${vm_ie}/" "C:/selenium/"
+  edit_and_copy_selenium_config "${selenium_path}WIN7/${vm_ie}/"
   chk error $? "Could not copy Selenium-Config"
 }
 
 config_selenium_wv() {
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${selenium_path}VISTA/${vm_ie}/config.json\" C:/selenium/ --username 'IEUser' --password 'Passw0rd!'"
-  copyto config.json "${selenium_path}VISTA/${vm_ie}/" "C:/selenium/"
+  edit_and_copy_selenium_config "${selenium_path}VISTA/${vm_ie}/"
   chk error $? "Could not copy Selenium-Config"
 }
 
 config_selenium_w8() {
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${selenium_path}WIN8/${vm_ie}/config.json\" C:/selenium/ --username 'IEUser' --password 'Passw0rd!'"
-  copyto config.json "${selenium_path}WIN8/${vm_ie}/" "C:/selenium/"
+  edit_and_copy_selenium_config "${selenium_path}WIN8/${vm_ie}/"
   chk error $? "Could not copy Selenium-Config"
 }
 
 ie11_driver_reg() {
   if [ "${vm_ie}" = "IE11" ]; then
     log "Copy ie11_win32.reg..."
-    #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${tools_path}ie11_win32.reg\" "${vm_temp}" --username 'IEUser' --password 'Passw0rd!'"
     copyto ie11_win32.reg "${tools_path}" "${vm_temp}"
     chk skip $? "Could not copy ie11_win32.reg"
     log "Setting ie11_win32.reg..."
-    execute "VBoxManage guestcontrol \"${vm_name}\" execute --image 'C:\\Windows\\Regedit.exe' --username 'IEUser' --password 'Passw0rd!' -- /s '${vm_temp}ie11_win32.reg'"
+    run_in_vm 'C:\Windows\Regedit.exe' /s "${vm_temp}ie11_win32.reg"
     chk skip $? "Could not set ie11_win32.reg"
   fi
 }
 
 # Install Selenium
 install_selenium() {
-  log "Creating C:/selenium/..."
-  execute "VBoxManage guestcontrol \"${vm_name}\" createdirectory C:/selenium/ --username 'IEUser' --password 'Passw0rd!'"
-  chk fatal $? "Could not create C:/Selenium/"
+  log "Creating C:\selenium\..."
+  execute VBoxManage guestcontrol "${vm_name}" --username 'IEUser' --password 'Passw0rd!' createdirectory 'C:\selenium\'
+  chk fatal $? "Could not create C:\Selenium\\"
   log "Installing Selenium..."
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${selenium_path}${selenium_jar}\" C:/selenium/ --username 'IEUser' --password 'Passw0rd!'"
-  copyto "${selenium_jar}" "${selenium_path}" "C:/selenium/"
+  copyto "${selenium_jar}" "${selenium_path}" 'C:\selenium\'
   chk error $? "Could not install Selenium"
   log "Installing IEDriverServer..."
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto \"${selenium_path}IEDriverServer.exe\" C:/Windows/system32/ --username 'IEUser' --password 'Passw0rd!'"
-  copyto "IEDriverServer.exe" "${selenium_path}" "C:/Windows/system32/"
+  copyto IEDriverServer.exe "${selenium_path}" 'C:\Windows\system32\'
   chk error $? "Could not install IEDriverServer.exe"
   log "Configure Selenium..."
   execute_os_specific config_selenium
@@ -459,7 +493,7 @@ snapshot_vm() {
 # shutdown.exe is used because VBox ACPI-Functions are sometimes unreliable with XP-VMs.
 reboot_vm() {
   log "Rebooting..."
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image C:/Windows/system32/shutdown.exe --username 'IEUser' --password 'Passw0rd!' -- /t 5 /r /f"
+  run_in_vm 'C:\Windows\system32\shutdown.exe' /t 5 /r /f
   chk skip $? "Could not reboot"
   waiting 90
 }
@@ -467,14 +501,14 @@ reboot_vm() {
 # Shutdown the VM and control the success via showvminfo; shutdown.exe is used because VBox ACPI-Functions are sometimes unreliable with XP-VMs.
 shutdown_vm() {
   log "Shutting down..."
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image C:/Windows/system32/shutdown.exe --username 'IEUser' --password 'Passw0rd!' -- /t 5 /s /f"
+  run_in_vm 'C:\Windows\system32\shutdown.exe' /t 5 /s /f
   chk skip $? "Could not shut down"
   check_shutdown
 }
 
 shutdown_vm_for_removal() {
   log "Shutting down for removal..."
-  execute "VBoxManage guestcontrol \"${remove_vm}\" execute --image C:/Windows/system32/shutdown.exe --username 'IEUser' --password 'Passw0rd!' -- /t 5 /s /f"
+  execute VBoxManage guestcontrol "${remove_vm}" --username 'IEUser' --password 'Passw0rd!' run 'C:\Windows\system32\shutdown.exe' /t 5 /s /f
   chk skip $? "Could not shut down for removal"
 }
 
@@ -485,7 +519,7 @@ delete_vm() {
     shutdown_vm_for_removal
     waiting 30
   fi
-  execute "VBoxManage unregistervm \"${remove_vm}\" --delete"
+  execute VBoxManage unregistervm "${remove_vm}" --delete
   chk skip $? "Could not remove VM ${remove_vm}"
   waiting 10
 }
@@ -531,11 +565,10 @@ rename_vm() {
   echo 'c:\windows\system32\wbem\wmic.exe computersystem where caption="'${vm_orig_name}'" call rename "'${vm_pretty_name}'"' > /tmp/rename.bat
   chk skip $? "Could not create rename.bat"
   log "Copy rename.bat..."
-  #execute "VBoxManage guestcontrol \"${vm_name}\" copyto '/tmp/rename.bat' "${vm_temp}" --username 'IEUser' --password 'Passw0rd!'"
   copyto rename.bat '/tmp/' "${vm_temp}"
   chk skip $? "Could not copy rename.bat"
   log "Launch rename.bat..."
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image '${vm_temp}rename.bat' --username 'IEUser' --password 'Passw0rd!'"
+  run_in_vm "${vm_temp}rename.bat"
   chk skip $? "Could not change Hostname"
   waiting 5
 }
@@ -547,24 +580,14 @@ configure_clipboard() {
   waiting 5
 }
 
-# Check if --delete was given as second parameter to this script. The VM-Name is expected to be the third parameter.
-# If no VM-Name is given --delete will be ignored.
-if [ "${2}" = "--delete" ]; then
-  if [ ! -z "${3}" ]; then
-    delete_vm
-  else
-    log "Delete VM"
-    chk skip "--delete was given, but no VM, skipping..."
-  fi
-fi
-
 ex_activate_vm_xp() {
   chk skip 0 "Nothing to do..."
 }
 
 ex_activate_vm_w7() {
-  execute "VBoxManage guestcontrol \"${vm_name}\" execute --image cmd.exe --username 'IEUser' --password 'Passw0rd!' -- /C slmgr /ato"
+  run_in_vm start /b slmgr /ato
   chk skip $? "Could not activate Windows"
+  waiting 15
 }
 
 ex_activate_vm_wv() {
@@ -580,38 +603,36 @@ activate_vm() {
 }
 
 set_date_in_future() {
-  execute "VBoxManage modifyvm \"${vm_name}\" --biossystemtimeoffset +36000000000"
+  execute VBoxManage modifyvm "${vm_name}" --biossystemtimeoffset +36000000000
 }
 
 set_date_back() {
-  execute "VBoxManage modifyvm \"${vm_name}\" --biossystemtimeoffset -36000000000"
+  execute VBoxManage modifyvm "${vm_name}" --biossystemtimeoffset -36000000000
 }
 
 get_vm_info
 import_vm
-set_date_in_future
-set_network_config
+create_temp_path
 set_rdp_config
 disable_uac
 start_vm
+activate_vm
+shutdown_vm
+set_host_only_network
+start_vm
 disable_firewall
-create_temp_path
 rename_vm
 set_ie_config
+configure_clipboard
 install_java
 install_firefox
 install_chrome
 install_selenium
-configure_clipboard
-set_date_back
-activate_vm
 
 if [ "${create_snapshot}" = "True" ]; then
-  shutdown_vm "${vm_name}"
   snapshot_vm "Selenium"
-  start_vm
-else
-  reboot_vm
+  waiting 90
 fi
 
+start_vm
 sendmessage
