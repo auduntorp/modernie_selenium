@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Config; See readme for details.
 java_exe="jre-windows-i586.exe"
 firefox_exe="firefox.exe"
