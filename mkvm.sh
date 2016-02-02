@@ -72,7 +72,7 @@ activate_vm
 shutdown_vm
 set_host_only_network
 start_vm
-disable_firewall
+open_firewall
 rename_vm
 set_ie_config
 configure_clipboard
@@ -84,5 +84,5 @@ if [ "${create_snapshot}" = "True" ]; then
   waiting 90
 fi
 
-start_vm
+reboot_vm
 sendmessage

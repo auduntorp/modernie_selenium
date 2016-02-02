@@ -192,7 +192,7 @@ import_vm() {
 
 set_host_only_network() {
   log "Setting network to host only..."
-  execute VBoxManage modifyvm "${vm_name}" --nic1 hostonly --hostonlyadapter1 vboxnet0
+  execute VBoxManage modifyvm "${vm_name}" --nic2 hostonly --hostonlyadapter2 vboxnet0
   chk error $? "Could not set network to host only"
   if [ ! -z "${selenium_port}" ]; then
     log "Forwarding tcp port ${selenium_port} to host..."
@@ -266,30 +266,28 @@ start_vm() {
   waiting 60
 }
 
-# Internal: Helper-Functions to disable the Windows Firewall (called by disable_firewall)
-ex_disable_firewall_xp() {
+ex_open_firewall_xp() {
   log "Disabling Windows XP Firewall..."
-  run_in_vm 'C:/windows/system32/netsh.exe' firewall set opmode mode=DISABLE
+  run_in_vm 'C:\windows\system32\netsh.exe' firewall add portopening TCP ${selenium_port} "Open Port ${selenium_port}"
   chk error $? "Could not disable Firewall"
 }
 
-ex_disable_firewall_w7() {
+ex_open_firewall_w7() {
   log "Disabling Windows Firewall..."
-  run_in_vm 'C:/windows/system32/netsh.exe' advfirewall set allprofiles state off
+  run_in_vm 'C:/windows/system32/netsh.exe' advfirewall firewall add rule name="Open Port ${selenium_port}" dir=in action=allow protocol=TCP localport=${selenium_port}
   chk error $? "Could not disable Firewall"
 }
 
-ex_disable_firewall_wv() {
-  ex_disable_firewall_w7
+ex_open_firewall_wv() {
+  ex_open_firewall_w7
 }
 
-ex_disable_firewall_w8() {
-  ex_disable_firewall_w7
+ex_open_firewall_w8() {
+  ex_open_firewall_w7
 }
 
-# Disable the Windows Firewall; OS-Specific
-disable_firewall() {
-  execute_os_specific ex_disable_firewall
+open_firewall() {
+  execute_os_specific ex_open_firewall
 }
 
 # Create C:\Temp\; Most Functions who copy files to the VM are relying on this folder and will fail is he doesn't exists.
@@ -370,26 +368,26 @@ start_selenium_w8() {
 
 create_selenium_config() {
   remote_host=$(VBoxManage guestproperty get "${vm_name}" "/VirtualBox/GuestInfo/Net/0/V4/IP" | awk '{print $2}')
-  execute echo '{' \
-               '    "configuration": {' \
-               '        "port": '${selenium_port}',' \
-               '        "register": true,' \
-               '        "registerCycle": 5000,' \
-               '        "hubPort": 4444,' \
-               '        "hubHost": "'${hub_host}'"' \
-               '        "remoteHost": "http://'${remote_host}':'${selenium_port}'"' \
-               '    }' \
-               '    "capabilities": [' \
-               '        {' \
-               '            "platform": "'${platform}'",' \
-               '            "browserName": "internet explorer",' \
-               '            "version": '${ie_version}',' \
-               '            "maxInstances": 1,' \
-               '            "seleniumProtocol": "WebDriver"' \
-               '        }' \
-               '    ]' \
-               '}' \
-               >> temp/config.json
+  echo '{' \
+       '    "configuration": {' \
+       '        "port": '${selenium_port}',' \
+       '        "register": true,' \
+       '        "registerCycle": 5000,' \
+       '        "hubPort": 4444,' \
+       '        "hubHost": "'${hub_host}'",' \
+       '        "remoteHost": "http://'${remote_host}':'${selenium_port}'"' \
+       '    },' \
+       '    "capabilities": [' \
+       '        {' \
+       '            "platform": "'${platform}'",' \
+       '            "browserName": "internet explorer",' \
+       '            "version": '${ie_version}',' \
+       '            "maxInstances": 1,' \
+       '            "seleniumProtocol": "WebDriver"' \
+       '        }' \
+       '    ]' \
+       '}' \
+       > temp/config.json
 }
 copy_selenium_config() {
   create_selenium_config
@@ -399,22 +397,22 @@ copy_selenium_config() {
 
 config_selenium_xp() {
   platform="XP"
-  copy_selenium_config()
+  copy_selenium_config
 }
 
 config_selenium_w7() {
   platform="WINDOWS"
-  copy_selenium_config()
+  copy_selenium_config
 }
 
 config_selenium_wv() {
   platform="VISTA"
-  copy_selenium_config()
+  copy_selenium_config
 }
 
 config_selenium_w8() {
   platform="WIN8"
-  copy_selenium_config()
+  copy_selenium_config
 }
 
 ie11_driver_reg() {
