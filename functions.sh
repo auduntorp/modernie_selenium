@@ -10,7 +10,7 @@ retry_count=2
 
 copyto() {
   # $1 = filename, $2 = source directory, $3 destination directory
-  TARGET=$(realpath ${2}${1})
+  TARGET=${2}${1}
   if [ ! -f "$TARGET" ]
   then
     echo "Local file '${TARGET}' doesn't exist"
