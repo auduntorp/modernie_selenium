@@ -151,6 +151,7 @@ waiting() {
 
 set_vm_ie() {
     vm_ie=$(echo "${vm_name}" | awk -F' -' '{print $1}')
+    ie_version=${vm_ie:2}
 }
 
 # Get informations about the given Appliance (Name, OS-Type, IE-Version)
@@ -367,35 +368,53 @@ start_selenium_w8() {
   start_selenium_w7
 }
 
-edit_and_copy_selenium_config() {
-  cp "${1}/config.json" temp/config.json
-  execute sed -i.original "s/5555/${selenium_port}/g" temp/config.json
-  hub_host_json='"hubHost": "hubhost"'
-  new_hub_host_json='"hubHost": "'${hub_host}'"'
+create_selenium_config() {
   remote_host=$(VBoxManage guestproperty get "${vm_name}" "/VirtualBox/GuestInfo/Net/0/V4/IP" | awk '{print $2}')
-  remote_host_json='"remoteHost": "http://'${remote_host}:${selenium_port}'"'
-  execute sed -i.edited "s~${hub_host_json}~${new_hub_host_json}, ${remote_host_json}~g" temp/config.json
+  execute echo '{' \
+               '    "configuration": {' \
+               '        "port": '${selenium_port}',' \
+               '        "register": true,' \
+               '        "registerCycle": 5000,' \
+               '        "hubPort": 4444,' \
+               '        "hubHost": "'${hub_host}'"' \
+               '        "remoteHost": "http://'${remote_host}':'${selenium_port}'"' \
+               '    }' \
+               '    "capabilities": [' \
+               '        {' \
+               '            "platform": "'${platform}'",' \
+               '            "browserName": "internet explorer",' \
+               '            "version": '${ie_version}',' \
+               '            "maxInstances": 1,' \
+               '            "seleniumProtocol": "WebDriver"' \
+               '        }' \
+               '    ]' \
+               '}' \
+               >> temp/config.json
+}
+copy_selenium_config() {
+  create_selenium_config
   copyto config.json temp/ 'C:\selenium\'
+  chk error $? "Could not copy Selenium-Config"
 }
 
 config_selenium_xp() {
-  edit_and_copy_selenium_config "${selenium_path}XP/${vm_ie}/"
-  chk error $? "Could not copy Selenium-Config"
+  platform="XP"
+  copy_selenium_config()
 }
 
 config_selenium_w7() {
-  edit_and_copy_selenium_config "${selenium_path}WIN7/${vm_ie}/"
-  chk error $? "Could not copy Selenium-Config"
+  platform="WINDOWS"
+  copy_selenium_config()
 }
 
 config_selenium_wv() {
-  edit_and_copy_selenium_config "${selenium_path}VISTA/${vm_ie}/"
-  chk error $? "Could not copy Selenium-Config"
+  platform="VISTA"
+  copy_selenium_config()
 }
 
 config_selenium_w8() {
-  edit_and_copy_selenium_config "${selenium_path}WIN8/${vm_ie}/"
-  chk error $? "Could not copy Selenium-Config"
+  platform="WIN8"
+  copy_selenium_config()
 }
 
 ie11_driver_reg() {

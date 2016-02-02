@@ -77,8 +77,6 @@ rename_vm
 set_ie_config
 configure_clipboard
 install_java
-install_firefox
-install_chrome
 install_selenium
 
 if [ "${create_snapshot}" = "True" ]; then

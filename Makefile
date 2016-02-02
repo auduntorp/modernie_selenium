@@ -1,6 +1,8 @@
-all: fetch fetch_vms
+all: fetch fetch_vms unused
 
-fetch: Tools/selenium_conf/selenium-server-standalone.jar Tools/deuac.iso Tools/selenium_conf/IEDriverServer.exe Tools/selenium_conf/chromedrive.exe Tools/jre-windows-i586.exe Tools/firefox.exe Tools/chrome.exe
+fetch: Tools/selenium_conf/selenium-server-standalone.jar Tools/deuac.iso Tools/selenium_conf/IEDriverServer.exe Tools/jre-windows-i586.exe
+
+unused: Tools/selenium_conf/chromedrive.exe Tools/firefox.exe Tools/chrome.exe
 
 fetch_vms: VMs/IE11\ -\ Win7.ova VMs/IE8\ -\ Win7.ova VMs/IE10\ -\ Win7.ova VMs/IE9\ -\ Win7.ova
 
